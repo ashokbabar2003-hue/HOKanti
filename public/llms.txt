@@ -1,0 +1,24 @@
+# House Of Kanti
+
+> Handcrafted Ayurvedic skincare — ubtan, face masks, soaps, oils and gift hampers, inspired by timeless botanical wisdom.
+
+House Of Kanti is a holistic skincare sanctuary rooted in Ayurveda. The brand crafts clean, plant-based, high-performance rituals using ingredients like saffron, sandalwood, turmeric, rose and Himalayan clay. Orders are placed online with WhatsApp and Razorpay checkout; shipping is free above ₹999.
+
+## Pages
+
+- [Home](/): Brand overview, signature products and gift hampers.
+- [About](/about): Brand philosophy, vision, hero ingredients and signature collection.
+
+## Products
+
+- Kanti Ubtan — The Natural Cleanser
+- Kanti Face Pack — The Detox Ritual
+- Kanti Kumkumadi Night Oil — The Overnight Elixir (15 ml)
+- Kanti Kumkumadi Night Gel — The Overnight Elixir (50 gm)
+- Kanti Kumkumadi Night Combo — The Overnight Elixir
+- Kanti Bath Salt — The Spa Sanctuary
+- Kanti Ancient Glow Soap
+
+## Optional
+
+- [Sitemap](/sitemap.xml)

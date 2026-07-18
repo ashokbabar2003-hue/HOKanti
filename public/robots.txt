@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+Disallow: /account
+Disallow: /cart
+Disallow: /checkout
+Disallow: /auth
+Disallow: /api/
+
+Sitemap: https://houseofkanti.ai.studio/sitemap.xml
