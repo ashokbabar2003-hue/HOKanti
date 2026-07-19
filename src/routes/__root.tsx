@@ -75,6 +75,35 @@ function RootShell({ children }: { children: React.ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        {/* Inlined theme initialization script to run synchronously in head and prevent flash */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var stored = localStorage.getItem('house_of_kanti_theme');
+                  if (stored) {
+                    var parsed = JSON.parse(stored);
+                    if (parsed && parsed.version === 1) {
+                      var theme = parsed.theme;
+                      var validThemes = ['classic-kanti', 'night-ritual', 'lotus-bloom', 'forest-herbal'];
+                      if (validThemes.indexOf(theme) !== -1) {
+                        document.documentElement.setAttribute('data-theme', theme);
+                        if (theme === 'night-ritual') {
+                          document.documentElement.classList.add('dark');
+                        } else {
+                          document.documentElement.classList.remove('dark');
+                        }
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.error('Theme head-script error:', e);
+                }
+              })();
+            `,
+          }}
+        />
       </head>
       <body>
         {children}

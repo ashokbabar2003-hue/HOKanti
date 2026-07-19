@@ -72,8 +72,47 @@ const ThemeContext = createContext<ThemeCtx | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth();
-  const [theme, setThemeState] = useState<ThemeId>("classic-kanti");
+
+  // Initialize state synchronously on client side from localStorage to avoid flashes
+  const [theme, setThemeState] = useState<ThemeId>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = localStorage.getItem("house_of_kanti_theme");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (
+            parsed &&
+            parsed.version === 1 &&
+            ["classic-kanti", "night-ritual", "lotus-bloom", "forest-herbal"].includes(parsed.theme)
+          ) {
+            return parsed.theme as ThemeId;
+          }
+        }
+      } catch (err) {
+        // ignore
+      }
+    }
+    return "classic-kanti";
+  });
+
   const [loading, setLoading] = useState(true);
+  const themeRef = useRef<ThemeId>(theme);
+
+  // Maintain reference to the current theme to use in effects without triggering re-runs
+  useEffect(() => {
+    themeRef.current = theme;
+  }, [theme]);
+
+  // Helper to persist theme locally with format: { version: 1, theme: ThemeId }
+  const saveThemeLocally = (id: ThemeId) => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("house_of_kanti_theme", JSON.stringify({ version: 1, theme: id }));
+      } catch (err) {
+        console.error("Failed to save theme to localStorage:", err);
+      }
+    }
+  };
 
   // Synchronize HTML attributes, class names, and dark mode solely inside this single-point-of-truth effect
   useEffect(() => {
@@ -85,6 +124,30 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, [theme]);
 
+  // Listen for storage change events (multi-tab support)
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "house_of_kanti_theme") {
+        try {
+          const parsed = JSON.parse(e.newValue || "");
+          if (
+            parsed &&
+            parsed.version === 1 &&
+            ["classic-kanti", "night-ritual", "lotus-bloom", "forest-herbal"].includes(parsed.theme)
+          ) {
+            setThemeState(parsed.theme as ThemeId);
+          }
+        } catch (err) {
+          // ignore
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
+
   const prevUserRef = useRef<string | null>(null);
 
   // Synchronize theme with authentication state changes
@@ -92,18 +155,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (authLoading) return;
 
     if (!user) {
-      // If a logged-in user explicitly logged out (transitioned from logged-in to guest)
-      if (prevUserRef.current !== null) {
-        setThemeState("classic-kanti");
-      }
+      // User is logged out / guest
+      // We DO NOT reset the theme on logout to adhere to: "Logging in or logging out must NOT reset the theme"
       setLoading(false);
+      prevUserRef.current = null;
     } else {
       // Authenticated users: Fetch from the centralized profiles.theme_preference table
       let active = true;
 
-      async function fetchUserTheme() {
+      async function syncUserTheme() {
         try {
-          const { data } = await supabase
+          const { data, error } = await supabase
             .from("profiles")
             .select("theme_preference")
             .eq("user_id", user.id)
@@ -111,15 +173,26 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
           if (!active) return;
 
-          if (data?.theme_preference && THEMES.some((t) => t.id === data.theme_preference)) {
-            setThemeState(data.theme_preference as ThemeId);
+          if (error) {
+            console.error("Failed to fetch user theme from profiles:", error);
+          }
+
+          const profileTheme = data?.theme_preference as ThemeId | undefined;
+          const isValid = profileTheme && THEMES.some((t) => t.id === profileTheme);
+
+          if (isValid) {
+            // Priority 1: User profile theme
+            setThemeState(profileTheme);
+            saveThemeLocally(profileTheme);
           } else {
-            // Keep default theme "classic-kanti" if no preference has been configured
-            setThemeState("classic-kanti");
+            // Profile theme not set -> Sync the current local theme to the profile
+            await supabase
+              .from("profiles")
+              .update({ theme_preference: themeRef.current })
+              .eq("user_id", user.id);
           }
         } catch (err) {
-          console.error("Failed to fetch user theme from profiles:", err);
-          setThemeState("classic-kanti");
+          console.error("Failed to sync user theme:", err);
         } finally {
           if (active) {
             setLoading(false);
@@ -127,14 +200,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      fetchUserTheme();
+      syncUserTheme();
+      prevUserRef.current = user.id;
+
       return () => {
         active = false;
       };
     }
-
-    // Update the tracked user ID for subsequent runs to distinguish route updates from real auth status transitions
-    prevUserRef.current = user ? user.id : null;
   }, [user, authLoading]);
 
   // Set and save the theme preference
@@ -143,6 +215,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
     // Apply the theme state immediately
     setThemeState(id);
+    saveThemeLocally(id);
 
     // Persist only if user is logged in
     if (user) {
