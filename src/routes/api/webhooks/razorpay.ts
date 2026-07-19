@@ -147,13 +147,13 @@ export const Route = createFileRoute("/api/webhooks/razorpay")({
               logStatus = "skipped";
             } else {
               // SECURITY VERIFICATION: Validate Amount & Currency
-              const currency = paymentEntity?.currency || "INR";
+              const currency = paymentEntity?.currency || orderEntity?.currency || "INR";
               if (currency.toUpperCase() !== "INR") {
                 throw new Error(`Currency mismatch: expected INR, received ${currency}`);
               }
 
               // Optional/conditional fetch of migration columns (final_amount, coupon_id)
-              let finalAmount = order.total_amount;
+              let finalAmount = Number(order.total_amount);
               let couponId: string | null = null;
 
               try {
@@ -163,8 +163,12 @@ export const Route = createFileRoute("/api/webhooks/razorpay")({
                   .eq("id", order.id)
                   .maybeSingle();
                 if (extraData) {
-                  if (extraData.final_amount !== undefined && extraData.final_amount !== null) {
-                    finalAmount = extraData.final_amount;
+                  if (
+                    extraData.final_amount !== undefined &&
+                    extraData.final_amount !== null &&
+                    Number(extraData.final_amount) > 0
+                  ) {
+                    finalAmount = Number(extraData.final_amount);
                   }
                   if (extraData.coupon_id !== undefined && extraData.coupon_id !== null) {
                     couponId = extraData.coupon_id;
@@ -178,7 +182,7 @@ export const Route = createFileRoute("/api/webhooks/razorpay")({
 
               const expectedAmount = finalAmount;
               const expectedPaise = Math.round(expectedAmount * 100);
-              const receivedPaise = paymentEntity?.amount;
+              const receivedPaise = paymentEntity?.amount ?? orderEntity?.amount;
 
               if (!receivedPaise || Math.abs(expectedPaise - receivedPaise) > 1) {
                 throw new Error(
