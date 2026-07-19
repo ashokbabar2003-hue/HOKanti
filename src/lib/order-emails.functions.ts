@@ -1,191 +1,171 @@
 import { createServerFn } from "@tanstack/react-start";
-import nodemailer from "nodemailer";
-import path from "node:path";
-import fs from "node:fs";
-import { supabaseAdmin } from "@/integrations/supabase/client.server";
-
-// Get SMTP Credentials
-const host = process.env.SMTP_HOST || "smtp.hostinger.com";
-const port = parseInt(process.env.SMTP_PORT || "465", 10);
-const user = process.env.SMTP_USER || "support@houseofkanti.shop";
-const pass = process.env.SMTP_PASS;
 
 /**
  * Server function to trigger sending order confirmation emails.
  * Uses a robust atomic database locking mechanism to prevent duplicate sends.
  */
-export const sendOrderConfirmationEmail = createServerFn({ method: "POST" })
-  .inputValidator((data: { orderId: string }) => {
-    if (!data?.orderId || typeof data.orderId !== "string") {
-      throw new Error("orderId is required");
-    }
-    return data;
-  })
-  .handler(async ({ data }) => {
-    const { orderId } = data;
-    console.log("[Email System] Request to send confirmation emails for order:", orderId);
+export async function sendOrderConfirmationEmailInternal(orderId: string) {
+  console.log("[Email System] Request to send confirmation emails for order:", orderId);
 
-    if (!pass) {
-      console.warn("[Email System] SMTP_PASS is not configured. Email sending skipped.");
-      return { success: false, error: "SMTP credentials not configured on server" };
-    }
+  // Dynamic imports of server-only and node-only modules to prevent bundling/evaluation in client
+  const nodemailer = await import("nodemailer");
+  const path = await import("node:path");
+  const fs = await import("node:fs");
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-    try {
-      // 1. ATOMIC LOCKING CHECK
-      // Attempt to set email status to sending. If it is already true, this update will affect 0 rows,
-      // meaning another thread/webhook is already handling or has completed this send.
-      const { data: updatedRows, error: lockErr } = await supabaseAdmin
-        .from("orders")
-        .update({
-          customer_email_sent: true,
-          admin_email_sent: true,
-          customer_email_sent_at: new Date().toISOString(),
-          admin_email_sent_at: new Date().toISOString(),
-        })
-        .eq("id", orderId)
-        .or("customer_email_sent.eq.false,customer_email_sent.is.null") // only lock if it hasn't been sent/locked yet (either false or null)
-        .select();
+  // Get SMTP Credentials inside the function (server-only context)
+  const host = process.env.SMTP_HOST || "smtp.hostinger.com";
+  const port = parseInt(process.env.SMTP_PORT || "465", 10);
+  const user = process.env.SMTP_USER || "support@houseofkanti.shop";
+  const pass = process.env.SMTP_PASS;
 
-      if (lockErr) {
-        console.error("[Email System] Lock database update error:", lockErr);
-        // Fallback safety check: if table update failed (e.g. columns don't exist yet), we still proceed to send, but log it.
-        console.warn(
-          "[Email System] DB lock columns might not exist. Falling back to un-locked fetch...",
-        );
-      } else if (updatedRows && updatedRows.length === 0) {
-        console.log(
-          "[Email System] Lock acquired by another thread or emails already sent. Skipping duplicate send.",
-        );
-        return { success: true, message: "Emails already processed" };
-      }
+  if (!pass) {
+    console.warn("[Email System] SMTP_PASS is not configured. Email sending skipped.");
+    return { success: false, error: "SMTP credentials not configured on server" };
+  }
 
-      // 2. FETCH COMPLETE ORDER DETAILS
-      const { data: order, error: orderErr } = await supabaseAdmin
-        .from("orders")
-        .select("*")
-        .eq("id", orderId)
-        .single();
+  try {
+    // 1. ATOMIC LOCKING CHECK
+    // Attempt to set email status to sending. If it is already true, this update will affect 0 rows,
+    // meaning another thread/webhook is already handling or has completed this send.
+    const { data: updatedRows, error: lockErr } = await supabaseAdmin
+      .from("orders")
+      .update({
+        customer_email_sent: true,
+        admin_email_sent: true,
+        customer_email_sent_at: new Date().toISOString(),
+        admin_email_sent_at: new Date().toISOString(),
+      })
+      .eq("id", orderId)
+      .or("customer_email_sent.eq.false,customer_email_sent.is.null") // only lock if it hasn't been sent/locked yet (either false or null)
+      .select();
 
-      if (orderErr || !order) {
-        console.error("[Email System] Failed to fetch order:", orderErr);
-        return { success: false, error: "Order not found" };
-      }
-
-      // Fetch order items
-      const { data: orderItems, error: itemsErr } = await supabaseAdmin
-        .from("order_items")
-        .select("*")
-        .eq("order_id", orderId);
-
-      if (itemsErr || !orderItems || orderItems.length === 0) {
-        console.error("[Email System] Failed to fetch order items:", itemsErr);
-        return { success: false, error: "Order items not found" };
-      }
-
-      // 3. FETCH CUSTOMER EMAIL FROM AUTH
-      let customerEmail = "";
-      try {
-        const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUser(
-          order.user_id,
-        );
-        if (userErr) {
-          console.error("[Email System] Error fetching user auth record:", userErr);
-        } else {
-          customerEmail = userData?.user?.email || "";
-        }
-      } catch (authErr) {
-        console.error("[Email System] Auth exception:", authErr);
-      }
-
-      if (!customerEmail) {
-        console.warn(
-          "[Email System] Customer email could not be retrieved from auth. Defaulting to shipping phone logic.",
-        );
-        // If we can't find email, let's check if the notes had any contact email or just use admin alert.
-      }
-
-      // 4. PARSE COUPONS AND PRICES DIRECTLY FROM COLUMNS (NO JSON FALLBACK)
-      const notesText = order.notes || "";
-      const couponCode = order.coupon_code || null;
-      const discountAmount = Number(order.discount_amount || 0);
-      const discountPercentage = Number(order.discount_percentage || 0);
-      let originalAmount = Number(order.original_amount || 0);
-      const finalAmount = Number(order.final_amount ?? order.total_amount);
-
-      // Calculations
-      const itemsSubtotal = orderItems.reduce(
-        (acc, item) => acc + item.unit_price * item.quantity,
-        0,
+    if (lockErr) {
+      console.error("[Email System] Lock database update error:", lockErr);
+      // Fallback safety check: if table update failed (e.g. columns don't exist yet), we still proceed to send, but log it.
+      console.warn(
+        "[Email System] DB lock columns might not exist. Falling back to un-locked fetch...",
       );
-      if (!originalAmount || originalAmount === 0) {
-        originalAmount = itemsSubtotal;
-      }
+    } else if (updatedRows && updatedRows.length === 0) {
+      console.log(
+        "[Email System] Lock acquired by another thread or emails already sent. Skipping duplicate send.",
+      );
+      return { success: true, message: "Emails already processed" };
+    }
 
-      const computedShipping = Math.max(0, finalAmount - (itemsSubtotal - discountAmount));
-      const formattedDate = new Date(order.created_at).toLocaleDateString("en-IN", {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true,
-      });
+    // 2. FETCH COMPLETE ORDER DETAILS
+    const { data: order, error: orderErr } = await supabaseAdmin
+      .from("orders")
+      .select("*")
+      .eq("id", orderId)
+      .single();
 
-      const paymentMethodDisplay =
-        order.payment_method === "cod" ? "Cash On Delivery (COD)" : "Paid Online";
-      const paymentStatusDisplay = order.payment_status?.toUpperCase() || "PENDING";
-      const orderStatusDisplay = order.status?.toUpperCase() || "RECEIVED";
+    if (orderErr || !order) {
+      console.error("[Email System] Failed to fetch order:", orderErr);
+      return { success: false, error: "Order not found" };
+    }
 
-      // 5. EMBED BRAND LOGO IF EXISTS
-      const transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure: port === 465,
-        auth: { user, pass },
-        connectionTimeout: 10000, // 10 seconds connection timeout
-        greetingTimeout: 10000, // 10 seconds greeting timeout
-        socketTimeout: 15000, // 15 seconds socket timeout
-      });
+    // Fetch order items
+    const { data: orderItems, error: itemsErr } = await supabaseAdmin
+      .from("order_items")
+      .select("*")
+      .eq("order_id", orderId);
 
-      // Robust helper with 2 retries for transient SMTP failures
-      async function sendWithRetry(
-        mailOptions: nodemailer.SendMailOptions,
-        maxRetries = 2,
-      ): Promise<unknown> {
-        let attempts = 0;
-        while (attempts <= maxRetries) {
-          try {
-            return await transporter.sendMail(mailOptions);
-          } catch (err) {
-            attempts++;
-            if (attempts > maxRetries) {
-              throw err;
-            }
-            console.warn(
-              `[Email System] SMTP send attempt ${attempts} failed. Retrying in 1 second... Error:`,
-              err,
-            );
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (itemsErr || !orderItems || orderItems.length === 0) {
+      console.error("[Email System] Failed to fetch order items:", itemsErr);
+      return { success: false, error: "Order items not found" };
+    }
+
+    // 3. GET CUSTOMER EMAIL FROM ORDER RECORD DIRECTLY
+    const customerEmail = order.customer_email || "";
+
+    if (!customerEmail) {
+      console.warn("[Email System] Historical order has no customer email saved.");
+    }
+
+    // 4. PARSE COUPONS AND PRICES DIRECTLY FROM COLUMNS (NO JSON FALLBACK)
+    const notesText = order.notes || "";
+    const couponCode = order.coupon_code || null;
+    const discountAmount = Number(order.discount_amount || 0);
+    const discountPercentage = Number(order.discount_percentage || 0);
+    let originalAmount = Number(order.original_amount || 0);
+    const finalAmount = Number(order.final_amount ?? order.total_amount);
+
+    // Calculations
+    const itemsSubtotal = orderItems.reduce(
+      (acc, item) => acc + item.unit_price * item.quantity,
+      0,
+    );
+    if (!originalAmount || originalAmount === 0) {
+      originalAmount = itemsSubtotal;
+    }
+
+    const computedShipping = Math.max(0, finalAmount - (itemsSubtotal - discountAmount));
+    const formattedDate = new Date(order.created_at).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+
+    const paymentMethodDisplay =
+      order.payment_method === "cod" ? "Cash On Delivery (COD)" : "Paid Online";
+    const paymentStatusDisplay = order.payment_status?.toUpperCase() || "PENDING";
+    const orderStatusDisplay = order.status?.toUpperCase() || "RECEIVED";
+
+    // 5. EMBED BRAND LOGO IF EXISTS
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+      connectionTimeout: 10000, // 10 seconds connection timeout
+      greetingTimeout: 10000, // 10 seconds greeting timeout
+      socketTimeout: 15000, // 15 seconds socket timeout
+    });
+
+    // Robust helper with 2 retries for transient SMTP failures
+    async function sendWithRetry(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mailOptions: any,
+      maxRetries = 2,
+    ): Promise<unknown> {
+      let attempts = 0;
+      while (attempts <= maxRetries) {
+        try {
+          return await transporter.sendMail(mailOptions);
+        } catch (err) {
+          attempts++;
+          if (attempts > maxRetries) {
+            throw err;
           }
+          console.warn(
+            `[Email System] SMTP send attempt ${attempts} failed. Retrying in 1 second... Error:`,
+            err,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
+    }
 
-      const emailLogoPath = path.join(process.cwd(), "src/assets/email_logo.png");
-      const emailLogoExists = fs.existsSync(emailLogoPath);
-      const mailAttachments = emailLogoExists
-        ? [
-            {
-              filename: "email_logo.png",
-              path: emailLogoPath,
-              cid: "email_logo",
-            },
-          ]
-        : [];
+    const emailLogoPath = path.join(process.cwd(), "src/assets/email_logo.png");
+    const emailLogoExists = fs.existsSync(emailLogoPath);
+    const mailAttachments = emailLogoExists
+      ? [
+          {
+            filename: "email_logo.png",
+            path: emailLogoPath,
+            cid: "email_logo",
+          },
+        ]
+      : [];
 
-      // 6. BUILD CUSTOMER HTML EMAIL
-      const itemsRowsHtml = orderItems
-        .map(
-          (item) => `
+    // 6. BUILD CUSTOMER HTML EMAIL
+    const itemsRowsHtml = orderItems
+      .map(
+        (item) => `
         <tr style="border-bottom: 1px solid #e5dfd9;">
           <td style="padding: 12px 8px; font-size: 14px; color: #333333; line-height: 1.4;">
             <strong>${item.product_name}</strong>
@@ -201,10 +181,10 @@ export const sendOrderConfirmationEmail = createServerFn({ method: "POST" })
           </td>
         </tr>
       `,
-        )
-        .join("");
+      )
+      .join("");
 
-      const customerHtml = `<!DOCTYPE html>
+    const customerHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -417,8 +397,8 @@ export const sendOrderConfirmationEmail = createServerFn({ method: "POST" })
 </body>
 </html>`;
 
-      // 7. BUILD ADMIN HTML EMAIL
-      const adminHtml = `<!DOCTYPE html>
+    // 7. BUILD ADMIN HTML EMAIL
+    const adminHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -554,99 +534,110 @@ export const sendOrderConfirmationEmail = createServerFn({ method: "POST" })
 </body>
 </html>`;
 
-      // 8. SEND EMAILS VIA SMTP TRANSPORTER
-      const subjectLine = `House Of Kanti - Order Confirmation [Order #${order.order_number}]`;
+    // 8. SEND EMAILS VIA SMTP TRANSPORTER
+    const subjectLine = `House Of Kanti - Order Confirmation [Order #${order.order_number}]`;
 
-      // A. Send to customer (if email is available)
-      let customerEmailSent = false;
-      let customerError: string | null = null;
-      if (customerEmail) {
-        try {
-          const info = await sendWithRetry({
-            from: `"House Of Kanti" <${user}>`,
-            to: customerEmail,
-            subject: subjectLine,
-            html: customerHtml,
-            attachments: mailAttachments,
-          });
-          customerEmailSent = true;
-          console.log(
-            "[Email System] Confirmation email sent to customer (via retry-ready sender):",
-            customerEmail,
-            info.messageId,
-          );
-        } catch (cErr: unknown) {
-          const errMsg = cErr instanceof Error ? cErr.message : String(cErr);
-          customerError = errMsg;
-          console.error(
-            "[Email System] Failed to send confirmation email to customer after retries:",
-            customerEmail,
-            cErr,
-          );
-        }
-      } else {
-        customerError = "Customer email not available in auth.";
-      }
-
-      // B. Send notification to admin
-      let adminEmailSent = false;
-      let adminError: string | null = null;
+    // A. Send to customer (if email is available)
+    let customerEmailSent = false;
+    let customerError: string | null = null;
+    if (customerEmail) {
       try {
         const info = await sendWithRetry({
-          from: `"House Of Kanti Billing" <${user}>`,
-          to: "support@houseofkanti.shop",
-          subject: `[Admin Alert] New Order #${order.order_number} (${paymentMethodDisplay})`,
-          html: adminHtml,
+          from: `"House Of Kanti" <${user}>`,
+          to: customerEmail,
+          subject: subjectLine,
+          html: customerHtml,
           attachments: mailAttachments,
         });
-        adminEmailSent = true;
+        customerEmailSent = true;
         console.log(
-          "[Email System] Alert email sent to admin support@houseofkanti.shop (via retry-ready sender):",
+          "[Email System] Confirmation email sent to customer (via retry-ready sender):",
+          customerEmail,
           info.messageId,
         );
-      } catch (aErr: unknown) {
-        const errMsg = aErr instanceof Error ? aErr.message : String(aErr);
-        adminError = errMsg;
-        console.error("[Email System] Failed to send alert email to admin after retries:", aErr);
-      }
-
-      // 9. UPDATE DATABASE SENT STATUS
-      // Gather any errors to store
-      const errorsList = [];
-      if (customerError) errorsList.push(`Customer: ${customerError}`);
-      if (adminError) errorsList.push(`Admin: ${adminError}`);
-      const combinedError = errorsList.length > 0 ? errorsList.join(" | ") : null;
-
-      // Create payload dynamically
-      const directPayload = {
-        customer_email_sent: customerEmailSent,
-        customer_email_sent_at: customerEmailSent ? new Date().toISOString() : null,
-        admin_email_sent: adminEmailSent,
-        admin_email_sent_at: adminEmailSent ? new Date().toISOString() : null,
-        email_error: combinedError,
-      };
-
-      const { error: finalUpdateErr } = await supabaseAdmin
-        .from("orders")
-        .update(directPayload)
-        .eq("id", orderId);
-
-      if (finalUpdateErr) {
+      } catch (cErr: unknown) {
+        const errMsg = cErr instanceof Error ? cErr.message : String(cErr);
+        customerError = errMsg;
         console.error(
-          "[Email System] Failed to save final email statuses to order record:",
-          finalUpdateErr.message,
+          "[Email System] Failed to send confirmation email to customer after retries:",
+          customerEmail,
+          cErr,
         );
       }
-
-      return {
-        success: customerEmailSent || adminEmailSent,
-        customerEmailSent,
-        adminEmailSent,
-        error: combinedError,
-      };
-    } catch (globalErr: unknown) {
-      console.error("[Email System] Critical exception inside handler:", globalErr);
-      const errMsg = globalErr instanceof Error ? globalErr.message : String(globalErr);
-      return { success: false, error: errMsg };
+    } else {
+      customerError = "Historical order has no customer email";
     }
+
+    // B. Send notification to admin
+    let adminEmailSent = false;
+    let adminError: string | null = null;
+    try {
+      const info = await sendWithRetry({
+        from: `"House Of Kanti Billing" <${user}>`,
+        to: "support@houseofkanti.shop",
+        subject: `[Admin Alert] New Order #${order.order_number} (${paymentMethodDisplay})`,
+        html: adminHtml,
+        attachments: mailAttachments,
+      });
+      adminEmailSent = true;
+      console.log(
+        "[Email System] Alert email sent to admin support@houseofkanti.shop (via retry-ready sender):",
+        info.messageId,
+      );
+    } catch (aErr: unknown) {
+      const errMsg = aErr instanceof Error ? aErr.message : String(aErr);
+      adminError = errMsg;
+      console.error("[Email System] Failed to send alert email to admin after retries:", aErr);
+    }
+
+    // 9. UPDATE DATABASE SENT STATUS
+    // Gather any errors to store
+    const errorsList = [];
+    if (customerError) errorsList.push(`Customer: ${customerError}`);
+    if (adminError) errorsList.push(`Admin: ${adminError}`);
+    const combinedError = errorsList.length > 0 ? errorsList.join(" | ") : null;
+
+    // Create payload dynamically
+    const directPayload = {
+      customer_email_sent: customerEmailSent,
+      customer_email_sent_at: customerEmailSent ? new Date().toISOString() : null,
+      admin_email_sent: adminEmailSent,
+      admin_email_sent_at: adminEmailSent ? new Date().toISOString() : null,
+      email_error: combinedError,
+    };
+
+    const { error: finalUpdateErr } = await supabaseAdmin
+      .from("orders")
+      .update(directPayload)
+      .eq("id", orderId);
+
+    if (finalUpdateErr) {
+      console.error(
+        "[Email System] Failed to save final email statuses to order record:",
+        finalUpdateErr.message,
+      );
+    }
+
+    return {
+      success: customerEmailSent || adminEmailSent,
+      customerEmailSent,
+      adminEmailSent,
+      error: combinedError,
+    };
+  } catch (globalErr: unknown) {
+    console.error("[Email System] Critical exception inside handler:", globalErr);
+    const errMsg = globalErr instanceof Error ? globalErr.message : String(globalErr);
+    return { success: false, error: errMsg };
+  }
+}
+
+export const sendOrderConfirmationEmail = createServerFn({ method: "POST" })
+  .inputValidator((data: { orderId: string }) => {
+    if (!data?.orderId || typeof data.orderId !== "string") {
+      throw new Error("orderId is required");
+    }
+    return data;
+  })
+  .handler(async ({ data }) => {
+    return sendOrderConfirmationEmailInternal(data.orderId);
   });

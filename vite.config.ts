@@ -20,6 +20,8 @@ export default defineConfig({
   },
   vite: {
     build: {
+      sourcemap: true,
+      minify: false,
       rollupOptions: {
         onwarn(warning, defaultHandler) {
           if (warning.code === "MODULE_LEVEL_DIRECTIVE" && warning.message.includes("use client")) {

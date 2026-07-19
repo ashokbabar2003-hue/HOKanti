@@ -90,6 +90,7 @@ async function runTests() {
     // We construct the order payload using only columns verified to exist in the physical database schema
     const successOrderPayload: Record<string, any> = {
       user_id: "8a4c369f-52bd-4ec4-bdd6-9ec8e954cdf8", // existing user from database
+      customer_email: "test-webhook@houseofkanti.shop",
       order_number: `test-webhook-success-${Date.now()}`,
       status: "pending",
       total_amount: 150,
@@ -116,9 +117,29 @@ async function runTests() {
     testOrderId = orderData.id;
     console.log(`[Setup] Created successful test order: ${testOrderId}`);
 
+    // Fetch a product to link
+    const { data: products } = await supabaseAdmin.from("products").select("id, name").limit(1);
+    const productId = products?.[0]?.id || null;
+    const productName = products?.[0]?.name || "Test Premium Product";
+
+    // Insert order item
+    const { error: itemErr } = await supabaseAdmin.from("order_items").insert({
+      order_id: testOrderId,
+      product_id: productId,
+      product_name: productName,
+      quantity: 1,
+      unit_price: 150,
+    });
+    if (itemErr) {
+      console.warn("[Setup] Could not insert test order item:", itemErr.message);
+    } else {
+      console.log(`[Setup] Created temporary order item linked to product: ${productName}`);
+    }
+
     console.log("[Setup] Creating a temporary test order for failed payment tests...");
     const failedOrderPayload: Record<string, any> = {
       user_id: "8a4c369f-52bd-4ec4-bdd6-9ec8e954cdf8",
+      customer_email: "test-failed-webhook@houseofkanti.shop",
       order_number: `test-webhook-failed-${Date.now()}`,
       status: "pending",
       total_amount: 200,
@@ -490,11 +511,15 @@ async function runTests() {
     console.log("=========================================================");
 
     if (testOrderId) {
+      console.log(`[Cleanup] Deleting successful test order items: ${testOrderId}`);
+      await supabaseAdmin.from("order_items").delete().eq("order_id", testOrderId);
       console.log(`[Cleanup] Deleting successful test order: ${testOrderId}`);
       await supabaseAdmin.from("orders").delete().eq("id", testOrderId);
     }
 
     if (testOrderFailedId) {
+      console.log(`[Cleanup] Deleting failed test order items: ${testOrderFailedId}`);
+      await supabaseAdmin.from("order_items").delete().eq("order_id", testOrderFailedId);
       console.log(`[Cleanup] Deleting failed test order: ${testOrderFailedId}`);
       await supabaseAdmin.from("orders").delete().eq("id", testOrderFailedId);
     }

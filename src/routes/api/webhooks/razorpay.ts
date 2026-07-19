@@ -277,8 +277,9 @@ export const Route = createFileRoute("/api/webhooks/razorpay")({
 
               // TRIGGER CONFIRMATION EMAILS (strictly once via built-in atomic check)
               try {
-                const { sendOrderConfirmationEmail } = await import("@/lib/order-emails.functions");
-                await sendOrderConfirmationEmail({ data: { orderId: order.id } });
+                const { sendOrderConfirmationEmailInternal } =
+                  await import("@/lib/order-emails.functions");
+                await sendOrderConfirmationEmailInternal(order.id);
               } catch (emailErr) {
                 console.error("[Razorpay Webhook] Failed to trigger email service:", emailErr);
               }

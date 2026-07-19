@@ -210,6 +210,7 @@ function CheckoutPage() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const orderPayload: any = {
         user_id: user.id,
+        customer_email: user.email || "",
         order_number: orderNumber,
         total_amount: grandTotal,
         status: "pending",
